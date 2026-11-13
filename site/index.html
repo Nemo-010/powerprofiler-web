@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Power Profiler (web)</title>
+    <link rel="stylesheet" href="fonts/mdi.css">
+    <style>
+        #connect-fab {
+            position: fixed; right: 24px; bottom: 24px; z-index: 99999;
+            padding: 12px 20px; border-radius: 24px; border: none;
+            background: #004d9f; color: #fff; font-size: 14px; cursor: pointer;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+            font-family: system-ui, sans-serif;
+        }
+        #connect-fab[hidden] { display: none; }
+        #load-error {
+            margin: 2rem auto; max-width: 40rem; padding: 1rem;
+            font-family: monospace; white-space: pre-wrap; color: #b71c1c;
+        }
+    </style>
+</head>
+<body>
+    <div id="webapp"></div>
+    <button id="connect-fab" hidden>Connect PPK2</button>
+    <pre id="load-error" hidden></pre>
+    <script>
+    (function () {
+        'use strict';
+
+        const errorBox = document.getElementById('load-error');
+        const showError = message => {
+            errorBox.textContent = String(message);
+            errorBox.hidden = false;
+        };
+        window.addEventListener('error', e => showError(e.message || 'unknown error'));
+        window.addEventListener('unhandledrejection', e => {
+            showError(`unhandled rejection: ${e.reason && e.reason.message || e.reason}`);
+        });
+
+        const loadScript = src => new Promise((resolve, reject) => {
+            const el = document.createElement('script');
+            el.src = src;
+            el.onload = resolve;
+            el.onerror = () => reject(new Error(`failed to load ${src}`));
+            document.head.appendChild(el);
+        });
+        const loadStyle = href => new Promise((resolve, reject) => {
+            const el = document.createElement('link');
+            el.rel = 'stylesheet';
+            el.href = href;
+            el.onload = resolve;
+            el.onerror = () => reject(new Error(`failed to load ${href}`));
+            document.head.appendChild(el);
+        });
+
+        const run = async () => {
+            if (!navigator.serial) {
+                showError('This browser does not support Web Serial. Use a Chromium-based browser (Chrome/Edge/Opera) over HTTPS or localhost.');
+                return;
+            }
+
+            const manifest = await fetch('manifest.json', { cache: 'no-store' })
+                .then(r => {
+                    if (!r.ok) throw new Error(`manifest fetch failed: ${r.status}`);
+                    return r.json();
+                });
+            const appBase = `app/${manifest.app}`;
+
+            const styles = Promise.all([
+                loadStyle(`${appBase}/bootstrap.css`),
+                loadStyle(`${appBase}/bundle.css`),
+            ]);
+
+            const shims = [
+                'shim/globals.js',
+                'shim/buffer.js',
+                'shim/events.js',
+                'shim/path.js',
+                'shim/node-builtins.js',
+                'shim/stream.js',
+                'shim/vfs.js',
+                'shim/zlib.js',
+                'shim/fs.js',
+                'shim/serial.js',
+                'shim/serial-ipc.js',
+                'shim/nrfutil.js',
+                'shim/childproc.js',
+                'shim/electron.js',
+                'shim/archiver.js',
+                'shim/require.js',
+            ];
+            for (const shim of shims) {
+                await loadScript(shim);
+            }
+            await styles;
+
+            // enumerate already-granted ports before the app queries the list
+            await window.__serialManager.init();
+
+            // WebSerial needs a user gesture to grant access the first time;
+            // this button exists only until a port has been paired once.
+            const fab = document.getElementById('connect-fab');
+            const refreshFab = async () => {
+                const ports = await navigator.serial.getPorts();
+                fab.hidden = ports.length > 0;
+            };
+            fab.addEventListener('click', async () => {
+                fab.disabled = true;
+                try {
+                    await window.__serialManager.requestPair();
+                } finally {
+                    fab.disabled = false;
+                    await refreshFab();
+                }
+            });
+            await refreshFab();
+            navigator.serial.addEventListener('connect', refreshFab);
+            navigator.serial.addEventListener('disconnect', refreshFab);
+
+            await loadScript(`${appBase}/bundle.js`);
+        };
+
+        run().catch(showError);
+    })();
+    </script>
+</head>
+</html>
